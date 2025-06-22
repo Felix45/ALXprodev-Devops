@@ -2,34 +2,46 @@
 
 # List of Pokémon (all lowercase for API compatibility)
 pokemon_list=("bulbasaur" "ivysaur" "venusaur" "charmander" "charmeleon")
-
-# Directory to store JSON files
 output_dir="pokemon_data"
-
-# Create output directory if it doesn't exist
+max_retries=3
+timeout_secs=10
 mkdir -p "$output_dir"
+touch errors.txt
 
-# Function to fetch data for a single Pokémon
+# Trap to kill background jobs on Ctrl+C
+trap "echo -e '\n⚠️ Interrupted. Killing all fetch processes...'; kill 0; exit 1" SIGINT
+
+# Function to fetch Pokémon with retry and timeout logic
 fetch_pokemon() {
     local pokemon=$1
+    local attempt=1
+
     echo "Fetching data for $pokemon..."
 
-    response=$(curl -s -w "%{http_code}" -o "$output_dir/${pokemon}.json" "https://pokeapi.co/api/v2/pokemon/$pokemon")
+    while [ $attempt -le $max_retries ]; do
+        # Use timeout to limit how long curl can take
+        http_code=$(timeout "$timeout_secs" curl -s -w "%{http_code}" -o "$output_dir/${pokemon}.json" "https://pokeapi.co/api/v2/pokemon/$pokemon")
 
-    if [ "$response" -eq 200 ]; then
-        echo "Saved data to $output_dir/${pokemon}.json ✅"
-    else
-        echo "❌ Failed to fetch data for $pokemon (status code: $response)" | tee -a errors.txt
-        rm -f "$output_dir/${pokemon}.json"
-    fi
+        if [ "$http_code" == "200" ]; then
+            echo "Saved data to $output_dir/${pokemon}.json ✅"
+            return 0
+        else
+            echo "Attempt $attempt failed for $pokemon (status: $http_code or timeout)"
+            ((attempt++))
+            sleep 2
+        fi
+    done
+
+    echo "❌ Failed to fetch $pokemon after $max_retries attempts." | tee -a errors.txt
+    rm -f "$output_dir/${pokemon}.json"
 }
 
-# Loop through the Pokémon list and start fetches in background
+# Loop through Pokémon list and launch fetches in background
 for pokemon in "${pokemon_list[@]}"; do
     fetch_pokemon "$pokemon" &
 done
 
-# Wait for all background jobs to finish
+# Wait for all background jobs
 wait
 
-echo "✅ All Pokémon data fetched in parallel."
+echo "✅ All Pokémon fetch processes complete."
